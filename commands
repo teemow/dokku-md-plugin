@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e;
 
+DOCKER_VOLUMES=/var/lib/docker/vfs/dir
+
 # Check if name is specified
 if [[ $1 == mariadb:* ]]; then
     if [[ -z $2 ]]; then
@@ -27,9 +29,16 @@ case "$1" in
         echo "MariaDB image not found... Did you run 'dokku plugins-install' ?"
         exit 1
     fi
+
+    # Create mariadb config folder
+    if [[ ! -d $DOKKU_ROOT/.mariadb ]]; then
+        mkdir -p $DOKKU_ROOT/.mariadb
+        chown -R dokku: $DOKKU_ROOT/.mariadb
+    fi
+
     # Check if an existing DB volume exists
-    if [[ -d "/var/lib/docker/volumes/mariadb-$APP" ]]; then
-        VOLUME="/var/lib/docker/volumes/mariadb-$APP/layer:/opt/mysql"
+    if [[ -f "$DOKKU_ROOT/.mariadb/volume_$APP" ]]; then
+        VOLUME="`cat $DOKKU_ROOT/.mariadb/volume_$APP`:/opt/mysql"
         echo
         echo "-----> Reusing mariadb/$APP database"
     else
@@ -37,10 +46,6 @@ case "$1" in
         # Generate a random password for DB user
         DB_PASSWORD=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c 16)
         # Temporarily store it to a file
-        if [[ ! -d $DOKKU_ROOT/.mariadb ]]; then
-            mkdir -p $DOKKU_ROOT/.mariadb
-            chown -R dokku: $DOKKU_ROOT/.mariadb
-        fi
         echo $DB_PASSWORD > "$DOKKU_ROOT/.mariadb/pwd_$APP"
         chown dokku: "$DOKKU_ROOT/.mariadb/pwd_$APP"
     fi
@@ -57,11 +62,10 @@ case "$1" in
     # Launch container
     ID=$(docker run -v $VOLUME -p 3306 -d $DB_IMAGE /usr/bin/start_mariadb.sh $DB_PASSWORD)
     sleep 4
-    # Rename persistent volume
-    if [[ ! -d "/var/lib/docker/volumes/mariadb-$APP" ]]; then
-        VOLUME_PATH=$(docker inspect $ID | grep "/var/lib/docker/volumes/" | awk '{print $2}' | sed -e"s/\/layer//" | sed -e's/"//g')
-        mv $VOLUME_PATH "/var/lib/docker/volumes/mariadb-$APP"
-        sleep 1
+    # Remember persistent volume
+    if [[ ! -f "$DOKKU_ROOT/.mariadb/volume_$APP" ]]; then
+        VOLUME_PATH=$(docker inspect $ID | grep "$DOCKER_VOLUMES/" | awk '{print $2}' | sed -e"s/\/layer//" | sed -e's/"//g')
+        echo $VOLUME_PATH > "$DOKKU_ROOT/.mariadb/volume_$APP"
     fi
     # Link to a potential existing app
     dokku mariadb:link $APP $APP
@@ -84,8 +88,8 @@ case "$1" in
         docker rmi $IMAGE
     fi
     # Remove persistent volume
-    if [[ -d "/var/lib/docker/volumes/mariadb-$APP" ]]; then
-        rm -rf "/var/lib/docker/volumes/mariadb-$APP"
+    if [[ -f "$DOKKU_ROOT/.mariadb/volume_$APP" ]]; then
+        rm -rf "`cat "$DOKKU_ROOT/.mariadb/volume_$APP"`"
     fi
     echo
     echo "-----> MariaDB container deleted: $DB_IMAGE"
